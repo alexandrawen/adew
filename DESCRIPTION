@@ -4,7 +4,6 @@ Version: 0.0.0.1
 Authors@R: 
     person(
       given = "Alexandra",
-      middle = c("D.", "E."),
       family = "Wen",
       role = c("aut", "cre"),
       email = "alexandra.d.e.wen@gmail.com"
@@ -15,7 +14,7 @@ Description: Helper functions for importing, cleaning, summarizing, and plotting
 License: MIT + file LICENSE
 Encoding: UTF-8
 Roxygen: list(markdown = TRUE)
-RoxygenNote: 7.3.2
+RoxygenNote: 7.3.3
 Depends: 
     R (>= 4.2.0)
 Imports:
