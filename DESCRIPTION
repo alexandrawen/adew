@@ -2,23 +2,43 @@ Package: adew
 Title: ADEW Its Just Right For You
 Version: 0.0.0.1
 Authors@R: 
-    person("Alexandra", "Wen", email = "alexandra.d.e.wen@gmail.com", role = c("aut", "cre"))
-Description: Provides helper functions for importing, processing, and summarizing
-    HOBO temperature logger data, Imaging-PAM AOI summary files, and qPCR (QuantStudio) output
-    for downstream analysis workflows.
+    person(
+      given = "Alexandra",
+      middle = c("D.", "E."),
+      family = "Wen",
+      role = c("aut", "cre"),
+      email = "alexandra.d.e.wen@gmail.com"
+    )
+Description: Helper functions for importing, cleaning, summarizing, and plotting
+    coral reef research data, including HOBO logger data, I-PAM data, qPCR
+    workflows, and related laboratory and field datasets.
 License: MIT + file LICENSE
 Encoding: UTF-8
 Roxygen: list(markdown = TRUE)
-RoxygenNote: 7.3.3
+RoxygenNote: 7.3.2
+Depends: 
+    R (>= 4.2.0)
 Imports:
     dplyr,
+    fs,
+    ggplot2,
+    ggthemes,
+    janitor,
     lubridate,
     magrittr,
-    plyr,
+    patchwork,
+    purrr,
     readr,
+    readxl,
     rlang,
     stringr,
-    strex,
-    tidyr
-URL: https://github.com/alexandrawen/adew
-BugReports: https://github.com/alexandrawen/adew/issues
+    tibble,
+    tidyr,
+    tools,
+    weathermetrics
+Suggests:
+    knitr,
+    rmarkdown,
+    testthat (>= 3.0.0)
+Config/testthat/edition: 3
+LazyData: true
