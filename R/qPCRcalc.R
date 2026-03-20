@@ -29,6 +29,57 @@
 #'   table. If `returnAll = TRUE`, returns the processed output joined back to the
 #'   original input data.
 #'
+#' @examples
+#' \dontrun{
+#' # Example 1: Standard workflow allowing single amplifications
+#' qPCRprops <- qPCRcalc(
+#'   df = dataExtract,
+#'   singles = TRUE,
+#'   sdThreshold = 2
+#' )
+#'
+#' # Example 2: Standard workflow requiring duplicate agreement and Ct cutoff
+#' qPCRprops_strict <- qPCRcalc(
+#'   df = dataExtract,
+#'   singles = FALSE,
+#'   sdThreshold = 1,
+#'   ctCutoff = 40
+#' )
+#'
+#' # Example 3: Return only the sample-level rerun / QC table
+#' qPCR_qc <- qPCRcalc(
+#'   df = dataExtract,
+#'   singles = TRUE,
+#'   sdThreshold = 2,
+#'   QC = TRUE
+#' )
+#'
+#' # Example 4: Return the detailed target-level rerun table
+#' qPCR_qc_detail <- qPCRcalc(
+#'   df = dataExtract,
+#'   singles = TRUE,
+#'   sdThreshold = 2,
+#'   QC = TRUE,
+#'   rerunDetail = TRUE
+#' )
+#'
+#' # Example 5: Return processed output joined back to the original input table
+#' qPCRprops_all <- qPCRcalc(
+#'   df = dataExtract,
+#'   singles = TRUE,
+#'   sdThreshold = 2,
+#'   returnAll = TRUE
+#' )
+#'
+#' # Example 6: Ignore Ct cutoff and use replicate count + SD only
+#' qPCRprops_no_cutoff <- qPCRcalc(
+#'   df = dataExtract,
+#'   singles = FALSE,
+#'   sdThreshold = 2,
+#'   ctCutoff = NA
+#' )
+#' }
+#'
 #' @importFrom magrittr "%>%"
 #' @importFrom rlang .data
 #' @export

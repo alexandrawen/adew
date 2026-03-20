@@ -242,6 +242,22 @@ hoboDHWs <- function(path,
   }
 
   parse_datetime_vector <- function(x) {
+
+    if (inherits(x, c("POSIXct", "POSIXlt", "POSIXt"))) {
+      return(as.POSIXct(x, tz = "UTC"))
+    }
+
+    if (inherits(x, "Date")) {
+      return(as.POSIXct(x, tz = "UTC"))
+    }
+
+    if (is.numeric(x)) {
+      tmp_dt <- suppressWarnings(as.POSIXct(x, origin = "1899-12-30", tz = "UTC"))
+      if (!all(is.na(tmp_dt))) {
+        return(tmp_dt)
+      }
+    }
+
     x <- as.character(x)
 
     tmp_parsed <- suppressWarnings(
@@ -262,6 +278,13 @@ hoboDHWs <- function(path,
         tz = "UTC"
       )
     )
+
+    if (all(is.na(tmp_parsed))) {
+      stop(
+        "DateTime values could not be parsed. ",
+        "Check whether the source column contains a supported datetime format."
+      )
+    }
 
     as.POSIXct(tmp_parsed, tz = "UTC")
   }
