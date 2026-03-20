@@ -13,40 +13,36 @@
 #'   \item temperature recorded in either degrees Celsius or Fahrenheit
 #'   \item light columns recorded as Light, Lux, Intensity, or lum/ft²
 #'   \item CSV and Excel export formats
-#'   \item directories that contain multiple files or nested folders of files
+#'   \item directories that contain multiple files
 #' }
 #'
-#' Provenance metadata are retained in standardized columns, including
-#' `Source_File`, `Source_Series`, `Logger_SN`, and `Plot_Title`, so imported
-#' data can be cleaned and rerun through the function later without depending on
-#' a literal column named `Group`.
-#'
 #' When `calc = TRUE`, daily hotspot values are calculated relative to a
-#' bleaching threshold of `MMM + anomaly`, where the hotspot magnitude is
+#' bleaching threshold of `MMM + anomaly`, where hotspot magnitude is
 #' calculated as `Temperature - MMM` for observations at or above the threshold.
 #' Daily DHWs are then calculated across an explicit 84-day rolling window using
 #' actual calendar dates rather than row position. Missing days are completed as
 #' `NA` and propagate uncertainty through DHW calculations rather than being
 #' assumed to be zero.
 #'
+#' If `groupingVariable` is supplied, the named column is used for summaries,
+#' DHWs, and plotting without requiring that column to be literally named
+#' `"Group"`. The original column name is retained in the output.
+#'
 #' @param path A data frame, a single file path, a character vector of file
 #'   paths, or a directory containing supported HOBO files.
 #' @param MMM Numeric. Maximum Monthly Mean temperature used as the bleaching
 #'   baseline.
-#' @param anomaly Numeric. Hotspot threshold above the MMM. Default is `1`,
-#'   corresponding to the common MMM + 1 °C threshold.
+#' @param anomaly Numeric. Hotspot threshold above the MMM. Default is `1`.
 #' @param calc Logical. If `TRUE`, calculate daily hotspot values and DHWs. If
 #'   `FALSE`, only standardize the data and generate daily temperature summaries.
-#' @param groupingVariable Optional character string naming a grouping column to
-#'   use for daily summaries, DHWs, and plotting. If not supplied, the function
-#'   uses `Source_Series` when available; otherwise all data are treated as one
-#'   series.
-#' @param recursive Logical. If `TRUE` and `path` is a directory, search
-#'   subdirectories recursively for supported files.
+#' @param groupingVariable Optional character string naming a grouping column.
+#'   This column is used directly if present in the input data. If not supplied
+#'   and multiple files are imported, `Source_File` is used as the grouping
+#'   variable.
 #' @param summary Logical. If `TRUE`, return the daily summary table. If
 #'   `FALSE`, return the full standardized time series with appended daily
 #'   metrics when available.
-#' @param plot Logical. If `TRUE`, generate a simple temperature plot and, when
+#' @param plot Logical. If `TRUE`, generate a temperature plot and, when
 #'   `calc = TRUE`, a companion DHW plot.
 #' @param plotFile Optional file path for saving the plot. If `NULL`, the plot
 #'   is printed but not saved.
@@ -56,20 +52,39 @@
 #'
 #' @examples
 #' \dontrun{
+#' # ===== Import one file without calculating DHWs =====
 #' tmp_hobo <- hoboDHWs(
-#'   path = c("logger1.csv", "logger2.csv"),
+#'   path = "logger1.xlsx",
+#'   MMM = 29.5,
+#'   calc = FALSE
+#' )
+#'
+#' # ===== Import all supported files in a directory and calculate daily DHWs =====
+#' tmp_summary <- hoboDHWs(
+#'   path = "hobo_exports/",
+#'   MMM = 29.5,
+#'   anomaly = 1,
+#'   calc = TRUE,
+#'   summary = TRUE
+#' )
+#'
+#' # ===== Import multiple files, add a grouping column, and summarize by that column =====
+#' tmp_hobo <- hoboDHWs(
+#'   path = c("logger1.xlsx", "logger2.xlsx"),
 #'   MMM = 29.5,
 #'   calc = FALSE
 #' )
 #'
 #' tmp_hobo <- tmp_hobo %>%
-#'   dplyr::mutate(site = dplyr::case_when(
-#'     grepl("Pier", Source_File) ~ "RSMAS Pier",
-#'     grepl("DiLido", Source_File) ~ "DiLido",
-#'     TRUE ~ "Other"
-#'   ))
+#'   dplyr::mutate(
+#'     site = dplyr::case_when(
+#'       grepl("Pier", Source_File) ~ "RSMAS Pier",
+#'       grepl("DiLido", Source_File) ~ "DiLido",
+#'       TRUE ~ "Other"
+#'     )
+#'   )
 #'
-#' tmp_summary <- hoboDHWs(
+#' tmp_site_summary <- hoboDHWs(
 #'   path = tmp_hobo,
 #'   MMM = 29.5,
 #'   anomaly = 1,
@@ -89,12 +104,11 @@ hoboDHWs <- function(path,
                      anomaly = 1,
                      calc = TRUE,
                      groupingVariable = NA,
-                     recursive = TRUE,
                      summary = FALSE,
                      plot = FALSE,
                      plotFile = NULL) {
 
-  # ===== Validate Inputs =====
+  # ===== Validate inputs =====
   if (!is.numeric(MMM) || length(MMM) != 1 || is.na(MMM)) {
     stop("`MMM` must be a single non-missing numeric value.")
   }
@@ -105,10 +119,6 @@ hoboDHWs <- function(path,
 
   if (!is.logical(calc) || length(calc) != 1 || is.na(calc)) {
     stop("`calc` must be TRUE or FALSE.")
-  }
-
-  if (!is.logical(recursive) || length(recursive) != 1 || is.na(recursive)) {
-    stop("`recursive` must be TRUE or FALSE.")
   }
 
   if (!is.logical(summary) || length(summary) != 1 || is.na(summary)) {
@@ -129,62 +139,112 @@ hoboDHWs <- function(path,
     stop("`plotFile` must be NULL or a single non-empty character string.")
   }
 
-  # ===== Helper Functions =====
+  # ===== Helper: return the first non-missing value in a vector =====
   safe_first_non_na <- function(x) {
     x <- x[!is.na(x)]
+
     if (length(x) == 0) {
       return(NA)
     }
+
     x[[1]]
   }
 
+  # ===== Helper: extract logger serial number from header-like text =====
   extract_serial_number <- function(x) {
     if (length(x) == 0 || all(is.na(x))) {
       return(NA_character_)
     }
 
     tmp_match <- stringr::str_match(
-      string = paste(x, collapse = " | "),
-      pattern = "(?:LGR\\s*S/N:|SEN\\s*S/N:|Serial\\s*Number:?|S/N:?)[[:space:]]*([0-9]+)"
+      paste(x, collapse = " | "),
+      "(?:LGR\\s*S/N:|SEN\\s*S/N:|Serial\\s*Number:?|S/N:?)[[:space:]]*([0-9]+)"
     )
 
     tmp_match[, 2]
   }
 
-  clean_hobo_excel <- function(df_raw) {
-    df_raw <- as.data.frame(df_raw, stringsAsFactors = FALSE)
+  # ===== Helper: parse HOBO datetimes across common export styles =====
+  parse_hobo_datetime <- function(x) {
+    tmp_raw_examples <- utils::head(unique(x[!is.na(x)]), 5)
 
-    if (nrow(df_raw) < 2) {
-      stop("Excel file does not contain enough rows to identify headers.")
+    try_return <- function(value) {
+      if (sum(!is.na(value)) > 0) {
+        return(value)
+      }
+
+      NULL
     }
 
-    tmp_first_cell <- as.character(df_raw[1, 1])
-
-    if (!is.na(tmp_first_cell) && grepl("Plot Title", tmp_first_cell, ignore.case = TRUE)) {
-      tmp_header_row <- 2
-      tmp_serial <- extract_serial_number(unlist(df_raw[tmp_header_row, ]))
-      tmp_plot_title <- tmp_first_cell
-
-      names(df_raw) <- as.character(unlist(df_raw[tmp_header_row, ]))
-      df_raw <- df_raw[-c(1, 2), , drop = FALSE]
-    } else {
-      tmp_header_row <- 1
-      tmp_serial <- extract_serial_number(unlist(df_raw[tmp_header_row, ]))
-      tmp_plot_title <- NA_character_
-
-      names(df_raw) <- as.character(unlist(df_raw[tmp_header_row, ]))
-      df_raw <- df_raw[-1, , drop = FALSE]
+    if (inherits(x, c("POSIXct", "POSIXt"))) {
+      return(as.POSIXct(x))
     }
 
-    df_raw <- janitor::remove_empty(df_raw, which = c("rows", "cols"))
+    if (inherits(x, "Date")) {
+      return(as.POSIXct(x))
+    }
 
-    list(
-      data = df_raw,
-      logger_sn = tmp_serial,
-      plot_title = tmp_plot_title
+    if (is.factor(x)) {
+      x <- as.character(x)
+    }
+
+    if (is.numeric(x)) {
+      tmp_out <- try_return(as.POSIXct(x * 86400, origin = "1899-12-30", tz = "UTC"))
+
+      if (!is.null(tmp_out)) {
+        return(tmp_out)
+      }
+
+      message(
+        "Failed to parse numeric DateTime values. Example raw values: ",
+        paste(tmp_raw_examples, collapse = ", ")
+      )
+
+      stop(
+        "DateTime values could not be parsed from numeric input. ",
+        "Check whether the source column contains valid Excel date-time values."
+      )
+    }
+
+    x <- as.character(x)
+    x <- stringr::str_squish(x)
+    x[x == ""] <- NA_character_
+
+    tmp_numeric <- suppressWarnings(as.numeric(x))
+    tmp_out <- try_return(as.POSIXct(tmp_numeric * 86400, origin = "1899-12-30", tz = "UTC"))
+
+    if (!is.null(tmp_out)) {
+      return(tmp_out)
+    }
+
+    tmp_formats <- c(
+      "%Y-%m-%d %H:%M:%S",
+      "%m/%d/%y %I:%M:%S %p",
+      "%m/%d/%Y %I:%M:%S %p",
+      "%m/%d/%y %H:%M:%S",
+      "%m/%d/%Y %H:%M:%S"
+    )
+
+    for (tmp_format in tmp_formats) {
+      tmp_out <- try_return(as.POSIXct(x, format = tmp_format, tz = "UTC"))
+
+      if (!is.null(tmp_out)) {
+        return(tmp_out)
+      }
+    }
+
+    message(
+      "Failed to parse DateTime values. Example raw values: ",
+      paste(tmp_raw_examples, collapse = ", ")
+    )
+
+    stop(
+      "DateTime values could not be parsed. ",
+      "Check whether the source column contains a supported datetime format."
     )
   }
 
+  # ===== Helper: read one HOBO file and recover header metadata =====
   read_hobo_file <- function(file_path) {
     tmp_ext <- tolower(tools::file_ext(file_path))
 
@@ -205,7 +265,11 @@ hoboDHWs <- function(path,
         NA_character_
       )
 
-      tmp_skip <- ifelse(grepl("Plot Title", tmp_first_line, ignore.case = TRUE), 1, 0)
+      tmp_skip <- ifelse(
+        grepl("Plot Title", tmp_first_line, ignore.case = TRUE),
+        1,
+        0
+      )
 
       tmp_df <- suppressMessages(
         readr::read_csv(
@@ -217,347 +281,265 @@ hoboDHWs <- function(path,
       ) %>%
         as.data.frame(stringsAsFactors = FALSE)
 
-      tmp_serial <- extract_serial_number(c(names(tmp_df), tmp_first_line))
-
       return(list(
         data = tmp_df,
-        logger_sn = tmp_serial,
+        logger_sn = extract_serial_number(c(names(tmp_df), tmp_first_line)),
         plot_title = tmp_plot_title
       ))
     }
 
-    if (tmp_ext %in% c("xlsx", "xls")) {
-      tmp_sheet <- readxl::excel_sheets(file_path)[1]
+    tmp_sheet <- readxl::excel_sheets(file_path)[1]
 
-      tmp_df <- suppressMessages(
-        readxl::read_excel(
-          path = file_path,
-          sheet = tmp_sheet,
-          col_names = FALSE
-        )
+    tmp_df <- suppressMessages(
+      readxl::read_excel(
+        path = file_path,
+        sheet = tmp_sheet,
+        col_names = FALSE
       )
+    ) %>%
+      as.data.frame(stringsAsFactors = FALSE)
 
-      return(clean_hobo_excel(tmp_df))
-    }
-  }
-
-  parse_datetime_vector <- function(x) {
-
-    if (inherits(x, c("POSIXct", "POSIXlt", "POSIXt"))) {
-      return(as.POSIXct(x, tz = "UTC"))
+    if (nrow(tmp_df) < 2) {
+      stop("Excel file does not contain enough rows to identify headers: ", basename(file_path))
     }
 
-    if (inherits(x, "Date")) {
-      return(as.POSIXct(x, tz = "UTC"))
+    tmp_first_cell <- as.character(tmp_df[1, 1])
+
+    if (!is.na(tmp_first_cell) && grepl("Plot Title", tmp_first_cell, ignore.case = TRUE)) {
+      tmp_header_row <- 2
+      tmp_plot_title <- tmp_first_cell
+      tmp_logger_sn <- extract_serial_number(unlist(tmp_df[tmp_header_row, ]))
+      names(tmp_df) <- as.character(unlist(tmp_df[tmp_header_row, ]))
+      tmp_df <- tmp_df[-c(1, 2), , drop = FALSE]
+    } else {
+      tmp_header_row <- 1
+      tmp_plot_title <- NA_character_
+      tmp_logger_sn <- extract_serial_number(unlist(tmp_df[tmp_header_row, ]))
+      names(tmp_df) <- as.character(unlist(tmp_df[tmp_header_row, ]))
+      tmp_df <- tmp_df[-1, , drop = FALSE]
     }
 
-    if (is.numeric(x)) {
-      tmp_dt <- suppressWarnings(as.POSIXct(x, origin = "1899-12-30", tz = "UTC"))
-      if (!all(is.na(tmp_dt))) {
-        return(tmp_dt)
-      }
-    }
+    tmp_df <- janitor::remove_empty(tmp_df, which = c("rows", "cols"))
 
-    x <- as.character(x)
-
-    tmp_parsed <- suppressWarnings(
-      lubridate::parse_date_time(
-        x,
-        orders = c(
-          "mdy HMS p",
-          "mdy HM p",
-          "mdy IMS p",
-          "mdy IM p",
-          "mdy HMS",
-          "mdy HM",
-          "ymd HMS",
-          "ymd HM",
-          "Ymd HMS",
-          "Ymd HM"
-        ),
-        tz = "UTC"
-      )
+    list(
+      data = tmp_df,
+      logger_sn = tmp_logger_sn,
+      plot_title = tmp_plot_title
     )
-
-    if (all(is.na(tmp_parsed))) {
-      stop(
-        "DateTime values could not be parsed. ",
-        "Check whether the source column contains a supported datetime format."
-      )
-    }
-
-    as.POSIXct(tmp_parsed, tz = "UTC")
   }
 
-  standardize_hobo_data <- function(hoboFile,
-                                    logger_sn = NA_character_,
-                                    plot_title = NA_character_) {
+  # ===== Helper: standardize input columns to a common HOBO schema =====
+  standardize_hobo <- function(hoboFile,
+                               groupingVariable = NA) {
 
-    tmp_original_names <- names(hoboFile)
+    tmp_names <- names(hoboFile)
 
-    if (is.null(tmp_original_names) || length(tmp_original_names) == 0) {
+    if (is.null(tmp_names) || length(tmp_names) == 0) {
       stop("Imported data do not contain column names.")
     }
 
-    tmp_name_map <- tibble::tibble(
-      original_name = tmp_original_names
+    tmp_map <- tibble::tibble(
+      original_name = tmp_names
     ) %>%
       dplyr::mutate(
-        clean_name = stringr::str_squish(original_name),
         function_name = dplyr::case_when(
-          grepl("date[ -]?time|datetime", clean_name, ignore.case = TRUE) ~ "DateTime",
-          grepl("^date$|date", clean_name, ignore.case = TRUE) &
-            !grepl("time", clean_name, ignore.case = TRUE) ~ "Date",
-          grepl("^time$|time", clean_name, ignore.case = TRUE) &
-            !grepl("date", clean_name, ignore.case = TRUE) ~ "Time",
-          grepl("temp|temperature", clean_name, ignore.case = TRUE) ~ "Temperature",
-          grepl("lux|light|intensity|lum", clean_name, ignore.case = TRUE) ~ "Light",
+          grepl("date", original_name, ignore.case = TRUE) &
+            grepl("time", original_name, ignore.case = TRUE) ~ "DateTime",
+          grepl("date", original_name, ignore.case = TRUE) &
+            !grepl("time", original_name, ignore.case = TRUE) ~ "Date",
+          !grepl("date", original_name, ignore.case = TRUE) &
+            grepl("time", original_name, ignore.case = TRUE) ~ "Time",
+          grepl("temp", original_name, ignore.case = TRUE) ~ "Temperature",
+          grepl("lux", original_name, ignore.case = TRUE) |
+            grepl("light", original_name, ignore.case = TRUE) |
+            grepl("lum", original_name, ignore.case = TRUE) ~ "Light",
+          !is.na(groupingVariable) & original_name == groupingVariable ~ "GroupingVariable",
           TRUE ~ NA_character_
         ),
         units = dplyr::case_when(
           function_name == "Temperature" &
-            grepl("°f|\\(f\\)|fahrenheit|temp,\\s*f", clean_name, ignore.case = TRUE) ~ "°F",
+            grepl("f", original_name, ignore.case = TRUE) ~ "°F",
           function_name == "Temperature" &
-            grepl("°c|\\(c\\)|celsius|temp,\\s*c", clean_name, ignore.case = TRUE) ~ "°C",
+            grepl("c", original_name, ignore.case = TRUE) ~ "°C",
           function_name == "Light" &
-            grepl("lux", clean_name, ignore.case = TRUE) ~ "lux",
+            grepl("lux", original_name, ignore.case = TRUE) ~ "lux",
           function_name == "Light" &
-            grepl("lum", clean_name, ignore.case = TRUE) ~ "lum/ft²",
+            grepl("lum", original_name, ignore.case = TRUE) ~ "lum",
           TRUE ~ NA_character_
         )
       )
 
-    if (!any(tmp_name_map$function_name == "Temperature")) {
+    tmp_pick <- function(label) {
+      tmp_match <- tmp_map %>%
+        dplyr::filter(function_name == label)
+
+      if (nrow(tmp_match) == 0) {
+        return(NA_character_)
+      }
+
+      tmp_match$original_name[[1]]
+    }
+
+    tmp_datetime_col <- tmp_pick("DateTime")
+    tmp_date_col <- tmp_pick("Date")
+    tmp_time_col <- tmp_pick("Time")
+    tmp_temp_col <- tmp_pick("Temperature")
+    tmp_light_col <- tmp_pick("Light")
+    tmp_group_col <- tmp_pick("GroupingVariable")
+
+    if (is.na(tmp_temp_col)) {
       stop("No temperature column could be identified.")
     }
 
-    if (!any(tmp_name_map$function_name %in% c("DateTime", "Date"))) {
+    if (is.na(tmp_datetime_col) && is.na(tmp_date_col)) {
       stop("No date or datetime column could be identified.")
     }
 
-    tmp_keep <- tmp_name_map %>%
-      dplyr::filter(!is.na(function_name))
-
-    hoboFile <- hoboFile[, tmp_keep$original_name, drop = FALSE]
-    names(hoboFile) <- tmp_keep$function_name
-
-    if ("DateTime" %in% names(hoboFile)) {
-      hoboFile <- hoboFile %>%
-        dplyr::mutate(DateTime = parse_datetime_vector(DateTime))
-    } else if (all(c("Date", "Time") %in% names(hoboFile))) {
-      hoboFile <- hoboFile %>%
-        dplyr::mutate(DateTime = parse_datetime_vector(paste(Date, Time)))
-    } else if ("Date" %in% names(hoboFile)) {
-      hoboFile <- hoboFile %>%
-        dplyr::mutate(DateTime = parse_datetime_vector(Date))
+    if (!is.na(tmp_datetime_col)) {
+      tmp_datetime <- parse_hobo_datetime(hoboFile[[tmp_datetime_col]])
+    } else if (!is.na(tmp_date_col) && !is.na(tmp_time_col)) {
+      tmp_datetime <- parse_hobo_datetime(paste(hoboFile[[tmp_date_col]], hoboFile[[tmp_time_col]]))
+    } else {
+      tmp_datetime <- parse_hobo_datetime(hoboFile[[tmp_date_col]])
     }
 
-    if (all(is.na(hoboFile$DateTime))) {
-      stop("No DateTime values could be parsed.")
-    }
-
-    hoboFile <- hoboFile %>%
-      dplyr::filter(!is.na(DateTime))
-
-    tmp_temp_units <- tmp_name_map %>%
-      dplyr::filter(function_name == "Temperature") %>%
+    tmp_convert <- tmp_map %>%
+      dplyr::filter(original_name == tmp_temp_col) %>%
       dplyr::pull(units)
 
-    tmp_temp_units <- tmp_temp_units[!is.na(tmp_temp_units)][1]
+    tmp_convert <- tmp_convert[!is.na(tmp_convert)][1]
 
-    if (is.na(tmp_temp_units)) {
-      tmp_temp_values <- suppressWarnings(as.numeric(hoboFile$Temperature))
+    tmp_out <- tibble::tibble(
+      DateTime = tmp_datetime,
+      Temperature = suppressWarnings(as.numeric(hoboFile[[tmp_temp_col]]))
+    )
 
-      if (all(is.na(tmp_temp_values))) {
-        stop("Temperature column could not be converted to numeric.")
-      }
-
-      tmp_temp_units <- ifelse(mean(tmp_temp_values, na.rm = TRUE) > 45, "°F", "°C")
-      message("Temperature units were not explicit in the source header. Inferred units as ", tmp_temp_units, ".")
+    if (!is.na(tmp_light_col)) {
+      tmp_out$Light <- suppressWarnings(as.numeric(hoboFile[[tmp_light_col]]))
     }
 
-    hoboFile <- hoboFile %>%
-      dplyr::mutate(
-        Temperature = suppressWarnings(as.numeric(Temperature)),
-        Temperature = dplyr::if_else(
-          tmp_temp_units == "°F",
-          weathermetrics::fahrenheit.to.celsius(Temperature),
-          Temperature
+    if (!is.na(tmp_group_col)) {
+      tmp_out[[groupingVariable]] <- as.character(hoboFile[[tmp_group_col]])
+    }
+
+    if (all(is.na(tmp_out$Temperature))) {
+      stop("Temperature column could not be converted to numeric.")
+    }
+
+    if (is.na(tmp_convert)) {
+      tmp_convert <- ifelse(mean(tmp_out$Temperature, na.rm = TRUE) > 45, "°F", "°C")
+    }
+
+    if (!is.na(tmp_convert) && tmp_convert == "°F") {
+      tmp_out <- tmp_out %>%
+        dplyr::mutate(
+          Temperature = weathermetrics::fahrenheit.to.celsius(Temperature)
         )
-      ) %>%
-      dplyr::filter(!is.na(Temperature)) %>%
+    }
+
+    tmp_out <- tmp_out %>%
+      dplyr::filter(!is.na(DateTime), !is.na(Temperature)) %>%
       dplyr::rename(`Temperature °C` = Temperature)
 
-    if ("Light" %in% names(hoboFile)) {
-      hoboFile <- hoboFile %>%
-        dplyr::mutate(Light = suppressWarnings(as.numeric(Light)))
-    }
-
-    hoboFile %>%
-      dplyr::mutate(
-        Logger_SN = logger_sn,
-        Plot_Title = plot_title
-      ) %>%
-      dplyr::select(dplyr::any_of(c(
-        "DateTime",
-        "Temperature °C",
-        "Light",
-        "Logger_SN",
-        "Plot_Title"
-      )))
+    tmp_out
   }
 
-  infer_file_groups <- function(path, recursive = TRUE) {
-    if (length(path) > 1) {
-      tmp_files <- path[file.exists(path)]
-
-      if (length(tmp_files) == 0) {
-        stop("None of the supplied file paths could be found.")
-      }
-
-      tmp_index <- tibble::tibble(
-        file_path = tmp_files,
-        file_name = basename(tmp_files),
-        folder_name = basename(dirname(tmp_files)),
-        file_stem = tools::file_path_sans_ext(file_name),
-        Source_Series = file_stem,
-        grouping_rule = "vector_of_files_each_file_is_series"
-      )
-
-      return(tmp_index)
-    }
-
-    if (length(path) == 1 && file.exists(path)) {
-      tmp_index <- tibble::tibble(
-        file_path = path,
-        file_name = basename(path),
-        folder_name = basename(dirname(path)),
-        file_stem = tools::file_path_sans_ext(basename(path)),
-        Source_Series = tools::file_path_sans_ext(basename(path)),
-        grouping_rule = "single_file_single_series"
-      )
-
-      return(tmp_index)
-    }
-
-    if (length(path) == 1 && dir.exists(path)) {
-      tmp_files <- list.files(
-        path = path,
-        pattern = "\\.(csv|xlsx|xls)$",
-        full.names = TRUE,
-        recursive = recursive
-      )
-
-      if (length(tmp_files) == 0) {
-        stop("No supported HOBO files were found in the supplied directory.")
-      }
-
-      tmp_index <- tibble::tibble(
-        file_path = tmp_files,
-        file_name = basename(tmp_files),
-        rel_dir = dirname(fs::path_rel(tmp_files, start = path)),
-        folder_name = basename(dirname(tmp_files)),
-        file_stem = tools::file_path_sans_ext(file_name)
-      ) %>%
-        dplyr::mutate(
-          Source_Series = dplyr::case_when(
-            rel_dir == "." ~ file_stem,
-            TRUE ~ folder_name
-          ),
-          grouping_rule = dplyr::case_when(
-            rel_dir == "." ~ "top_level_files_each_file_is_series",
-            TRUE ~ "subfolder_files_combined_within_folder"
-          )
+  # ===== Helper: decide which column should act as the grouping variable =====
+  determine_group_column <- function(df, groupingVariable = NA) {
+    if (!is.na(groupingVariable)) {
+      if (!groupingVariable %in% names(df)) {
+        stop(
+          "`groupingVariable = '",
+          groupingVariable,
+          "'` was supplied, but that column was not found in the data."
         )
+      }
 
-      return(tmp_index)
+      return(groupingVariable)
     }
 
-    stop("`path` must be a data frame, an existing file path, a vector of existing file paths, or a directory.")
+    if ("Source_File" %in% names(df) && dplyr::n_distinct(df$Source_File, na.rm = TRUE) > 1) {
+      return("Source_File")
+    }
+
+    NA_character_
   }
 
-  report_parsed_groups <- function(file_index) {
-    tmp_report <- file_index %>%
-      dplyr::count(Source_Series, name = "n_files") %>%
-      dplyr::arrange(Source_Series)
+  # ===== Helper: calculate rolling DHWs using actual dates and an 84-day window =====
+  calc_dhw_by_date <- function(dates, dhDay) {
+    vapply(
+      seq_along(dates),
+      FUN.VALUE = numeric(1),
+      FUN = function(i) {
+        tmp_window_start <- dates[i] - 83
+        tmp_window_idx <- dates >= tmp_window_start & dates <= dates[i]
+        tmp_window_values <- dhDay[tmp_window_idx]
 
-    message("Parsed ", nrow(file_index), " HOBO file(s) into ", nrow(tmp_report), " inferred series.")
-
-    purrr::pwalk(
-      list(tmp_report$Source_Series, tmp_report$n_files),
-      function(Source_Series, n_files) {
-        if (n_files == 1) {
-          message("  - `", Source_Series, "`: 1 file treated as a standalone series.")
-        } else {
-          message("  - `", Source_Series, "`: ", n_files, " files combined as one continuous series.")
+        if (any(is.na(tmp_window_values))) {
+          return(NA_real_)
         }
+
+        sum(tmp_window_values) / 7
       }
     )
   }
 
-  determine_grouping_column <- function(df, groupingVariable = NA) {
-    if (!is.na(groupingVariable)) {
-      if (!groupingVariable %in% names(df)) {
-        stop("`groupingVariable = '", groupingVariable, "'` was supplied, but that column was not found in the data.")
-      }
-      return(groupingVariable)
-    }
+  # ===== Helper: summarise daily rows without assuming Logger_SN exists =====
+  summarise_daily_core <- function(df_daily) {
+    tmp_has_logger <- "Logger_SN" %in% names(df_daily)
 
-    if ("Source_Series" %in% names(df)) {
-      return("Source_Series")
-    }
+    tmp_result <- df_daily %>%
+      dplyr::group_by(.group_internal, Date) %>%
+      dplyr::summarise(
+        Source_File = safe_first_non_na(.data$Source_File),
+        Temperature_Average = mean(.data$`Temperature °C`, na.rm = TRUE),
+        Temperature_StDev = stats::sd(.data$`Temperature °C`, na.rm = TRUE),
+        Temperature_Min = min(.data$`Temperature °C`, na.rm = TRUE),
+        Temperature_Max = max(.data$`Temperature °C`, na.rm = TRUE),
+        N_Records = dplyr::n(),
+        dhDay = if ("hotspot_weighted" %in% names(df_daily)) {
+          if (all(is.na(.data$hotspot_weighted))) NA_real_ else sum(.data$hotspot_weighted, na.rm = TRUE)
+        } else {
+          NULL
+        },
+        .groups = "drop"
+      )
 
-    return(NA_character_)
-  }
-
-  prepare_grouped_data <- function(df, groupingVariable = NA) {
-    tmp_group_var <- determine_grouping_column(df, groupingVariable = groupingVariable)
-
-    if (!is.na(tmp_group_var)) {
-      df <- df %>%
-        dplyr::mutate(
-          .group_internal = as.character(.data[[tmp_group_var]]),
-          Plot_Group = as.character(.data[[tmp_group_var]])
+    if (tmp_has_logger) {
+      tmp_logger <- df_daily %>%
+        dplyr::group_by(.group_internal, Date) %>%
+        dplyr::summarise(
+          Logger_SN = safe_first_non_na(.data$Logger_SN),
+          .groups = "drop"
         )
 
-      message("Using `", tmp_group_var, "` as the grouping variable for summaries, DHWs, and plotting.")
+      tmp_result <- tmp_result %>%
+        dplyr::left_join(tmp_logger, by = c(".group_internal", "Date")) %>%
+        dplyr::relocate(dplyr::any_of("Logger_SN"), .after = Date)
+    }
+
+    tmp_result
+  }
+
+  # ===== Helper: calculate daily temperature summaries, hotspots, and DHWs =====
+  calculate_daily_metrics <- function(df, MMM, anomaly, group_col = NA_character_) {
+    if (is.na(group_col)) {
+      df <- df %>%
+        dplyr::mutate(.group_internal = "All_Data")
     } else {
       df <- df %>%
-        dplyr::mutate(
-          .group_internal = "All_Data",
-          Plot_Group = "All_Data"
-        )
-
-      message("No grouping variable detected. Treating all data as one continuous series.")
+        dplyr::mutate(.group_internal = as.character(.data[[group_col]]))
     }
 
-    df
-  }
-
-  calc_dhw_by_date <- function(dates, dhDay) {
-    purrr::map_dbl(seq_along(dates), function(i) {
-      tmp_window_start <- dates[i] - 83
-      tmp_window_idx <- dates >= tmp_window_start & dates <= dates[i]
-      tmp_window_values <- dhDay[tmp_window_idx]
-
-      if (any(is.na(tmp_window_values))) {
-        return(NA_real_)
-      }
-
-      sum(tmp_window_values) / 7
-    })
-  }
-
-  calculate_daily_metrics <- function(df, MMM, anomaly) {
     tmp_daily_raw <- df %>%
       dplyr::arrange(.group_internal, DateTime) %>%
-      dplyr::group_by(.group_internal, Plot_Group) %>%
+      dplyr::group_by(.group_internal) %>%
       dplyr::mutate(
         Date = as.Date(DateTime),
         next_time = dplyr::lead(DateTime),
         interval_minutes = as.numeric(difftime(next_time, DateTime, units = "mins"))
       ) %>%
-      dplyr::group_by(.group_internal, Plot_Group, Date) %>%
+      dplyr::group_by(.group_internal, Date) %>%
       dplyr::mutate(
         interval_minutes = dplyr::if_else(
           is.na(interval_minutes) | interval_minutes <= 0,
@@ -578,45 +560,45 @@ hoboDHWs <- function(path,
       ) %>%
       dplyr::ungroup()
 
-    tmp_daily_summary <- tmp_daily_raw %>%
-      dplyr::group_by(.group_internal, Plot_Group, Date) %>%
-      dplyr::summarise(
-        Logger_SN = safe_first_non_na(Logger_SN),
-        Plot_Title = safe_first_non_na(Plot_Title),
-        Source_File = safe_first_non_na(Source_File),
-        Source_Series = safe_first_non_na(Source_Series),
-        Temperature_Average = mean(`Temperature °C`, na.rm = TRUE),
-        Temperature_StDev = stats::sd(`Temperature °C`, na.rm = TRUE),
-        Temperature_Min = min(`Temperature °C`, na.rm = TRUE),
-        Temperature_Max = max(`Temperature °C`, na.rm = TRUE),
-        N_Records = dplyr::n(),
-        dhDay = if (all(is.na(hotspot_weighted))) NA_real_ else sum(hotspot_weighted, na.rm = TRUE),
-        .groups = "drop"
-      ) %>%
-      dplyr::group_by(.group_internal, Plot_Group) %>%
+    tmp_daily_summary <- summarise_daily_core(tmp_daily_raw) %>%
+      dplyr::group_by(.group_internal) %>%
       tidyr::complete(Date = seq(min(Date), max(Date), by = "day")) %>%
       dplyr::arrange(Date, .by_group = TRUE) %>%
-      tidyr::fill(
-        Logger_SN,
-        Plot_Title,
-        Source_File,
-        Source_Series,
-        .direction = "downup"
-      ) %>%
+      tidyr::fill(dplyr::any_of(c("Logger_SN", "Source_File")), .direction = "downup") %>%
       dplyr::mutate(
         DHWs = calc_dhw_by_date(Date, dhDay)
       ) %>%
       dplyr::ungroup()
 
-    tmp_complete <- tmp_daily_raw %>%
-      dplyr::select(-next_time) %>%
-      dplyr::mutate(Date = as.Date(DateTime)) %>%
-      dplyr::left_join(
-        tmp_daily_summary %>%
-          dplyr::select(.group_internal, Plot_Group, Date, dhDay, DHWs),
-        by = c(".group_internal", "Plot_Group", "Date")
-      ) %>%
-      dplyr::select(-Date, -interval_minutes, -hotspot, -hotspot_weighted)
+    if (is.na(group_col)) {
+      tmp_daily_summary <- tmp_daily_summary %>%
+        dplyr::select(-.group_internal)
+    } else {
+      tmp_daily_summary <- tmp_daily_summary %>%
+        dplyr::mutate(!!group_col := .group_internal) %>%
+        dplyr::select(-.group_internal)
+    }
+
+    if (is.na(group_col)) {
+      tmp_complete <- tmp_daily_raw %>%
+        dplyr::left_join(
+          tmp_daily_summary %>%
+            dplyr::select(Date, dhDay, DHWs),
+          by = "Date"
+        ) %>%
+        dplyr::select(-next_time, -Date, -interval_minutes, -hotspot, -hotspot_weighted, -.group_internal)
+    } else {
+      tmp_complete <- tmp_daily_raw %>%
+        dplyr::left_join(
+          tmp_daily_summary %>%
+            dplyr::select(dplyr::all_of(group_col), Date, dhDay, DHWs),
+          by = c(group_col, "Date")
+        ) %>%
+        dplyr::select(-next_time, -Date, -interval_minutes, -hotspot, -hotspot_weighted, -.group_internal)
+    }
+
+    tmp_complete <- tmp_complete %>%
+      dplyr::select(-dplyr::any_of("Logger_SN"))
 
     list(
       full = tmp_complete,
@@ -624,39 +606,44 @@ hoboDHWs <- function(path,
     )
   }
 
-  summarize_daily_only <- function(df) {
-    df %>%
+  # ===== Helper: summarize daily temperatures without DHW calculations =====
+  summarize_daily_only <- function(df, group_col = NA_character_) {
+    if (is.na(group_col)) {
+      df <- df %>%
+        dplyr::mutate(.group_internal = "All_Data")
+    } else {
+      df <- df %>%
+        dplyr::mutate(.group_internal = as.character(.data[[group_col]]))
+    }
+
+    tmp_summary <- df %>%
       dplyr::mutate(Date = as.Date(DateTime)) %>%
-      dplyr::group_by(.group_internal, Plot_Group, Date) %>%
-      dplyr::summarise(
-        Logger_SN = safe_first_non_na(Logger_SN),
-        Plot_Title = safe_first_non_na(Plot_Title),
-        Source_File = safe_first_non_na(Source_File),
-        Source_Series = safe_first_non_na(Source_Series),
-        Temperature_Average = mean(`Temperature °C`, na.rm = TRUE),
-        Temperature_StDev = stats::sd(`Temperature °C`, na.rm = TRUE),
-        Temperature_Min = min(`Temperature °C`, na.rm = TRUE),
-        Temperature_Max = max(`Temperature °C`, na.rm = TRUE),
-        N_Records = dplyr::n(),
-        .groups = "drop"
-      )
+      summarise_daily_core()
+
+    if (is.na(group_col)) {
+      tmp_summary <- tmp_summary %>%
+        dplyr::select(-.group_internal)
+    } else {
+      tmp_summary <- tmp_summary %>%
+        dplyr::mutate(!!group_col := .group_internal) %>%
+        dplyr::select(-.group_internal)
+    }
+
+    tmp_complete <- df %>%
+      dplyr::select(-dplyr::any_of("Logger_SN"), -.group_internal)
+
+    list(
+      full = tmp_complete,
+      summary = tmp_summary
+    )
   }
 
-  # ===== Import and Standardize Data =====
+  # ===== Import and standardize data =====
   if (is.data.frame(path)) {
-    message("Importing HOBO data from an in-memory data frame.")
-
-    hoboFile <- standardize_hobo_data(
+    hoboFile <- standardize_hobo(
       hoboFile = path,
-      logger_sn = if ("Logger_SN" %in% names(path)) dplyr::first(path$Logger_SN) else NA_character_,
-      plot_title = if ("Plot_Title" %in% names(path)) dplyr::first(path$Plot_Title) else NA_character_
+      groupingVariable = groupingVariable
     )
-
-    for (tmp_col in c("Source_File", "Source_Series")) {
-      if (tmp_col %in% names(path) && !tmp_col %in% names(hoboFile)) {
-        hoboFile[[tmp_col]] <- path[[tmp_col]]
-      }
-    }
 
     tmp_extra_cols <- setdiff(names(path), names(hoboFile))
 
@@ -667,198 +654,187 @@ hoboDHWs <- function(path,
       )
     }
 
-  } else {
-    tmp_index <- infer_file_groups(path = path, recursive = recursive)
-    report_parsed_groups(tmp_index)
-
-    tmp_imported <- purrr::pmap(
-      list(tmp_index$file_path, tmp_index$Source_Series),
-      function(file_path, Source_Series) {
-        message("Reading: ", basename(file_path))
-
-        tmp_raw <- read_hobo_file(file_path)
-
-        tmp_std <- standardize_hobo_data(
-          hoboFile = tmp_raw$data,
-          logger_sn = tmp_raw$logger_sn,
-          plot_title = tmp_raw$plot_title
-        )
-
-        tmp_std %>%
-          dplyr::mutate(
-            Source_File = basename(file_path),
-            Source_Series = Source_Series
-          )
-      }
+  } else if (length(path) == 1 && dir.exists(path)) {
+    tmp_files <- list.files(
+      path,
+      pattern = "\\.(csv|xlsx|xls)$",
+      full.names = TRUE
     )
 
-    hoboFile <- dplyr::bind_rows(tmp_imported) %>%
-      dplyr::arrange(Source_Series, DateTime) %>%
+    if (length(tmp_files) == 0) {
+      stop("No supported HOBO files were found in the supplied directory.")
+    }
+
+    tmp_list <- lapply(tmp_files, function(tmp_file) {
+      tmp_raw <- read_hobo_file(tmp_file)
+
+      tmp_std <- standardize_hobo(
+        hoboFile = tmp_raw$data,
+        groupingVariable = groupingVariable
+      )
+
+      tmp_std$Source_File <- basename(tmp_file)
+
+      if (!is.na(tmp_raw$logger_sn)) {
+        tmp_std$Logger_SN <- tmp_raw$logger_sn
+      }
+
+      tmp_std
+    })
+
+    hoboFile <- dplyr::bind_rows(tmp_list) %>%
       dplyr::distinct()
+
+  } else if (length(path) == 1 && file.exists(path)) {
+    tmp_raw <- read_hobo_file(path)
+
+    hoboFile <- standardize_hobo(
+      hoboFile = tmp_raw$data,
+      groupingVariable = groupingVariable
+    )
+
+    hoboFile$Source_File <- basename(path)
+
+    if (!is.na(tmp_raw$logger_sn)) {
+      hoboFile$Logger_SN <- tmp_raw$logger_sn
+    }
+
+  } else if (is.character(path) && length(path) > 1) {
+    tmp_files <- path[file.exists(path)]
+
+    if (length(tmp_files) == 0) {
+      stop("None of the supplied file paths could be found.")
+    }
+
+    tmp_list <- lapply(tmp_files, function(tmp_file) {
+      tmp_raw <- read_hobo_file(tmp_file)
+
+      tmp_std <- standardize_hobo(
+        hoboFile = tmp_raw$data,
+        groupingVariable = groupingVariable
+      )
+
+      tmp_std$Source_File <- basename(tmp_file)
+
+      if (!is.na(tmp_raw$logger_sn)) {
+        tmp_std$Logger_SN <- tmp_raw$logger_sn
+      }
+
+      tmp_std
+    })
+
+    hoboFile <- dplyr::bind_rows(tmp_list) %>%
+      dplyr::distinct()
+
+  } else {
+    stop("Import failed.")
   }
 
   if (nrow(hoboFile) == 0) {
     stop("No valid HOBO observations remained after import and cleaning.")
   }
 
-  # ===== Prepare Grouping Structure =====
-  tmp_group_var <- determine_grouping_column(
+  # ===== Determine the grouping column to use downstream =====
+  tmp_group_col <- determine_group_column(
     df = hoboFile,
     groupingVariable = groupingVariable
   )
 
-  hoboFile <- prepare_grouped_data(
-    df = hoboFile,
-    groupingVariable = groupingVariable
-  )
-
-  plot_group_label <- dplyr::case_when(
-    is.na(tmp_group_var) ~ "Series",
-    tmp_group_var == "Source_Series" ~ "Series",
-    TRUE ~ tmp_group_var
-  )
-
-  # ===== Calculate Daily Metrics =====
+  # ===== Calculate daily metrics =====
   if (calc) {
     tmp_metrics <- calculate_daily_metrics(
       df = hoboFile,
       MMM = MMM,
-      anomaly = anomaly
+      anomaly = anomaly,
+      group_col = tmp_group_col
     )
 
     hoboComplete <- tmp_metrics$full
     hoboSummary <- tmp_metrics$summary
   } else {
     warning("`calc = FALSE`, so DHW metrics were not calculated.")
-    hoboComplete <- hoboFile
-    hoboSummary <- summarize_daily_only(hoboFile)
+    tmp_metrics <- summarize_daily_only(
+      df = hoboFile,
+      group_col = tmp_group_col
+    )
+
+    hoboComplete <- tmp_metrics$full
+    hoboSummary <- tmp_metrics$summary
   }
 
-  # ===== Plot Outputs =====
+  # ===== Plot output =====
   if (plot) {
-    if ("Plot_Group" %in% names(hoboComplete) &&
-        dplyr::n_distinct(hoboComplete$Plot_Group, na.rm = TRUE) > 1) {
-
-      p_temp <- ggplot2::ggplot(
-        hoboComplete,
-        ggplot2::aes(
-          x = DateTime,
-          y = `Temperature °C`,
-          color = Plot_Group,
-          fill = Plot_Group,
-          group = Plot_Group
-        )
-      ) +
-        ggplot2::geom_line(linewidth = 0.6, alpha = 0.8) +
-        ggplot2::geom_point(size = 1.5, alpha = 0.8) +
-        ggplot2::geom_hline(
-          yintercept = MMM + anomaly,
-          linetype = "dashed",
-          linewidth = 0.6
-        ) +
-        ggplot2::labs(
-          title = "Temperature time series",
-          x = NULL,
-          y = "Temperature (°C)",
-          color = plot_group_label,
-          fill = plot_group_label
-        ) +
-        ggthemes::theme_few(base_size = 13)
-
+    tmp_facet_formula <- if (!is.na(tmp_group_col)) {
+      stats::as.formula(paste("~", tmp_group_col))
     } else {
-      p_temp <- ggplot2::ggplot(
-        hoboComplete,
-        ggplot2::aes(
-          x = DateTime,
-          y = `Temperature °C`
-        )
+      NULL
+    }
+
+    p1 <- ggplot2::ggplot(
+      hoboComplete,
+      ggplot2::aes(
+        x = DateTime,
+        y = `Temperature °C`
+      )
+    ) +
+      ggplot2::geom_line(color = "#2C77B8", alpha = 0.8) +
+      ggplot2::geom_hline(
+        yintercept = MMM + anomaly,
+        color = "darkred",
+        linetype = "dashed",
+        linewidth = 0.6
       ) +
-        ggplot2::geom_line(linewidth = 0.6, alpha = 0.8) +
-        ggplot2::geom_point(size = 1.5, alpha = 0.8) +
-        ggplot2::geom_hline(
-          yintercept = MMM + anomaly,
-          linetype = "dashed",
-          linewidth = 0.6
-        ) +
-        ggplot2::labs(
-          title = "Temperature time series",
-          x = NULL,
-          y = "Temperature (°C)"
-        ) +
-        ggthemes::theme_few(base_size = 13)
+      ggplot2::labs(
+        y = "Temperature (°C)",
+        x = NULL
+      ) +
+      ggthemes::theme_few(base_size = 13)
+
+    if (!is.null(tmp_facet_formula)) {
+      p1 <- p1 + ggplot2::facet_wrap(tmp_facet_formula, scales = "free_x")
     }
 
     if (calc) {
-      if ("Plot_Group" %in% names(hoboSummary) &&
-          dplyr::n_distinct(hoboSummary$Plot_Group, na.rm = TRUE) > 1) {
-
-        p_dhw <- ggplot2::ggplot(
-          hoboSummary,
-          ggplot2::aes(
-            x = Date,
-            y = DHWs,
-            color = Plot_Group,
-            fill = Plot_Group,
-            group = Plot_Group
-          )
+      p2 <- ggplot2::ggplot(
+        hoboSummary,
+        ggplot2::aes(
+          x = Date,
+          y = DHWs
+        )
+      ) +
+        ggplot2::geom_line(color = "#F05D5E", linewidth = 0.8, na.rm = TRUE) +
+        ggplot2::labs(
+          title = "Degree Heating Weeks (DHWs)",
+          y = "DHWs",
+          x = "Date"
         ) +
-          ggplot2::geom_line(linewidth = 0.7, alpha = 0.8, na.rm = TRUE) +
-          ggplot2::geom_point(size = 1.6, alpha = 0.8, na.rm = TRUE) +
-          ggplot2::labs(
-            title = "Degree Heating Weeks (DHWs)",
-            x = "Date",
-            y = "DHWs",
-            color = plot_group_label,
-            fill = plot_group_label
-          ) +
-          ggthemes::theme_few(base_size = 13)
+        ggthemes::theme_few(base_size = 13)
 
-      } else {
-        p_dhw <- ggplot2::ggplot(
-          hoboSummary,
-          ggplot2::aes(
-            x = Date,
-            y = DHWs
-          )
-        ) +
-          ggplot2::geom_line(linewidth = 0.7, alpha = 0.8, na.rm = TRUE) +
-          ggplot2::geom_point(size = 1.6, alpha = 0.8, na.rm = TRUE) +
-          ggplot2::labs(
-            title = "Degree Heating Weeks (DHWs)",
-            x = "Date",
-            y = "DHWs"
-          ) +
-          ggthemes::theme_few(base_size = 13)
+      if (!is.null(tmp_facet_formula)) {
+        p2 <- p2 + ggplot2::facet_wrap(tmp_facet_formula, scales = "free_x")
       }
 
-      full_plot <- p_temp + p_dhw + patchwork::plot_layout(ncol = 2)
+      full_plot <- patchwork::wrap_plots(p1, p2, ncol = 1, heights = c(2, 1))
     } else {
-      full_plot <- p_temp
+      full_plot <- p1
     }
 
-    if (!is.null(plotFile)) {
+    if (is.null(plotFile)) {
+      print(full_plot)
+    } else {
       ggplot2::ggsave(
         filename = plotFile,
         plot = full_plot,
-        width = ifelse(calc, 16, 10),
-        height = 7,
+        width = 10,
+        height = if (calc) 15 else 10,
         dpi = 300
       )
 
       message("Plot saved to: ", normalizePath(plotFile))
-    } else {
-      print(full_plot)
     }
   }
 
-  # ===== Clean Output =====
-  hoboComplete <- hoboComplete %>%
-    dplyr::select(-.group_internal)
-
-  hoboSummary <- hoboSummary %>%
-    dplyr::select(-.group_internal)
-
-  # ===== Return Requested Output =====
+  # ===== Return output =====
   if (summary) {
     return(hoboSummary)
   } else {

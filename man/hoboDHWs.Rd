@@ -10,7 +10,6 @@ hoboDHWs(
   anomaly = 1,
   calc = TRUE,
   groupingVariable = NA,
-  recursive = TRUE,
   summary = FALSE,
   plot = FALSE,
   plotFile = NULL
@@ -23,25 +22,21 @@ paths, or a directory containing supported HOBO files.}
 \item{MMM}{Numeric. Maximum Monthly Mean temperature used as the bleaching
 baseline.}
 
-\item{anomaly}{Numeric. Hotspot threshold above the MMM. Default is \code{1},
-corresponding to the common MMM + 1 °C threshold.}
+\item{anomaly}{Numeric. Hotspot threshold above the MMM. Default is \code{1}.}
 
 \item{calc}{Logical. If \code{TRUE}, calculate daily hotspot values and DHWs. If
 \code{FALSE}, only standardize the data and generate daily temperature summaries.}
 
-\item{groupingVariable}{Optional character string naming a grouping column to
-use for daily summaries, DHWs, and plotting. If not supplied, the function
-uses \code{Source_Series} when available; otherwise all data are treated as one
-series.}
-
-\item{recursive}{Logical. If \code{TRUE} and \code{path} is a directory, search
-subdirectories recursively for supported files.}
+\item{groupingVariable}{Optional character string naming a grouping column.
+This column is used directly if present in the input data. If not supplied
+and multiple files are imported, \code{Source_File} is used as the grouping
+variable.}
 
 \item{summary}{Logical. If \code{TRUE}, return the daily summary table. If
 \code{FALSE}, return the full standardized time series with appended daily
 metrics when available.}
 
-\item{plot}{Logical. If \code{TRUE}, generate a simple temperature plot and, when
+\item{plot}{Logical. If \code{TRUE}, generate a temperature plot and, when
 \code{calc = TRUE}, a companion DHW plot.}
 
 \item{plotFile}{Optional file path for saving the plot. If \code{NULL}, the plot
@@ -66,38 +61,56 @@ including:
 \item temperature recorded in either degrees Celsius or Fahrenheit
 \item light columns recorded as Light, Lux, Intensity, or lum/ft²
 \item CSV and Excel export formats
-\item directories that contain multiple files or nested folders of files
+\item directories that contain multiple files
 }
 
-Provenance metadata are retained in standardized columns, including
-\code{Source_File}, \code{Source_Series}, \code{Logger_SN}, and \code{Plot_Title}, so imported
-data can be cleaned and rerun through the function later without depending on
-a literal column named \code{Group}.
-
 When \code{calc = TRUE}, daily hotspot values are calculated relative to a
-bleaching threshold of \code{MMM + anomaly}, where the hotspot magnitude is
+bleaching threshold of \code{MMM + anomaly}, where hotspot magnitude is
 calculated as \code{Temperature - MMM} for observations at or above the threshold.
 Daily DHWs are then calculated across an explicit 84-day rolling window using
 actual calendar dates rather than row position. Missing days are completed as
 \code{NA} and propagate uncertainty through DHW calculations rather than being
 assumed to be zero.
+
+If \code{groupingVariable} is supplied, the named column is used for summaries,
+DHWs, and plotting without requiring that column to be literally named
+\code{"Group"}. The original column name is retained in the output.
 }
 \examples{
 \dontrun{
+# ===== Import one file without calculating DHWs =====
 tmp_hobo <- hoboDHWs(
-  path = c("logger1.csv", "logger2.csv"),
+  path = "logger1.xlsx",
+  MMM = 29.5,
+  calc = FALSE
+)
+
+# ===== Import all supported files in a directory and calculate daily DHWs =====
+tmp_summary <- hoboDHWs(
+  path = "hobo_exports/",
+  MMM = 29.5,
+  anomaly = 1,
+  calc = TRUE,
+  summary = TRUE
+)
+
+# ===== Import multiple files, add a grouping column, and summarize by that column =====
+tmp_hobo <- hoboDHWs(
+  path = c("logger1.xlsx", "logger2.xlsx"),
   MMM = 29.5,
   calc = FALSE
 )
 
 tmp_hobo <- tmp_hobo \%>\%
-  dplyr::mutate(site = dplyr::case_when(
-    grepl("Pier", Source_File) ~ "RSMAS Pier",
-    grepl("DiLido", Source_File) ~ "DiLido",
-    TRUE ~ "Other"
-  ))
+  dplyr::mutate(
+    site = dplyr::case_when(
+      grepl("Pier", Source_File) ~ "RSMAS Pier",
+      grepl("DiLido", Source_File) ~ "DiLido",
+      TRUE ~ "Other"
+    )
+  )
 
-tmp_summary <- hoboDHWs(
+tmp_site_summary <- hoboDHWs(
   path = tmp_hobo,
   MMM = 29.5,
   anomaly = 1,
