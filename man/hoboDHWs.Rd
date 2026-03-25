@@ -6,7 +6,7 @@
 \usage{
 hoboDHWs(
   path,
-  MMM,
+  MMM = NA,
   anomaly = 1,
   calc = TRUE,
   groupingVariable = NA,
@@ -20,7 +20,8 @@ hoboDHWs(
 paths, or a directory containing supported HOBO files.}
 
 \item{MMM}{Numeric. Maximum Monthly Mean temperature used as the bleaching
-baseline.}
+baseline. Required when \code{calc = TRUE}. May be left as \code{NA} when
+\code{calc = FALSE}.}
 
 \item{anomaly}{Numeric. Hotspot threshold above the MMM. Default is \code{1}.}
 
@@ -66,7 +67,7 @@ including:
 
 When \code{calc = TRUE}, daily hotspot values are calculated relative to a
 bleaching threshold of \code{MMM + anomaly}, where hotspot magnitude is
-calculated as \code{Temperature_C - MMM} for observations at or above the
+calculated as \verb{Temperature \\u00B0C - MMM} for observations at or above the
 threshold. Daily DHWs are then calculated across an explicit 84-day rolling
 window using actual calendar dates rather than row position. Missing days are
 completed as \code{NA} and propagate uncertainty through DHW calculations rather
@@ -81,7 +82,6 @@ DHWs, and plotting without requiring that column to be literally named
 # ===== Import one file without calculating DHWs =====
 tmp_hobo <- hoboDHWs(
   path = "logger1.xlsx",
-  MMM = 29.5,
   calc = FALSE
 )
 
@@ -97,7 +97,6 @@ tmp_summary <- hoboDHWs(
 # ===== Import multiple files, add a grouping column, and summarize by that column =====
 tmp_hobo <- hoboDHWs(
   path = c("logger1.xlsx", "logger2.xlsx"),
-  MMM = 29.5,
   calc = FALSE
 )
 

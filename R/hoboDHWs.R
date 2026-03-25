@@ -18,7 +18,7 @@
 #'
 #' When `calc = TRUE`, daily hotspot values are calculated relative to a
 #' bleaching threshold of `MMM + anomaly`, where hotspot magnitude is
-#' calculated as `Temperature_C - MMM` for observations at or above the
+#' calculated as `Temperature \u00B0C - MMM` for observations at or above the
 #' threshold. Daily DHWs are then calculated across an explicit 84-day rolling
 #' window using actual calendar dates rather than row position. Missing days are
 #' completed as `NA` and propagate uncertainty through DHW calculations rather
@@ -31,7 +31,8 @@
 #' @param path A data frame, a single file path, a character vector of file
 #'   paths, or a directory containing supported HOBO files.
 #' @param MMM Numeric. Maximum Monthly Mean temperature used as the bleaching
-#'   baseline.
+#'   baseline. Required when `calc = TRUE`. May be left as `NA` when
+#'   `calc = FALSE`.
 #' @param anomaly Numeric. Hotspot threshold above the MMM. Default is `1`.
 #' @param calc Logical. If `TRUE`, calculate daily hotspot values and DHWs. If
 #'   `FALSE`, only standardize the data and generate daily temperature summaries.
@@ -55,7 +56,6 @@
 #' # ===== Import one file without calculating DHWs =====
 #' tmp_hobo <- hoboDHWs(
 #'   path = "logger1.xlsx",
-#'   MMM = 29.5,
 #'   calc = FALSE
 #' )
 #'
@@ -71,7 +71,6 @@
 #' # ===== Import multiple files, add a grouping column, and summarize by that column =====
 #' tmp_hobo <- hoboDHWs(
 #'   path = c("logger1.xlsx", "logger2.xlsx"),
-#'   MMM = 29.5,
 #'   calc = FALSE
 #' )
 #'
@@ -100,7 +99,7 @@
 #' @import patchwork
 #' @export
 hoboDHWs <- function(path,
-                     MMM,
+                     MMM = NA,
                      anomaly = 1,
                      calc = TRUE,
                      groupingVariable = NA,
@@ -108,17 +107,25 @@ hoboDHWs <- function(path,
                      plot = FALSE,
                      plotFile = NULL) {
 
+  temp_col_name <- "Temperature \u00B0C"
+
   # ===== Validate inputs =====
-  if (!is.numeric(MMM) || length(MMM) != 1 || is.na(MMM)) {
-    stop("`MMM` must be a single non-missing numeric value.")
+  if (!is.logical(calc) || length(calc) != 1 || is.na(calc)) {
+    stop("`calc` must be TRUE or FALSE.")
+  }
+
+  if (calc) {
+    if (!is.numeric(MMM) || length(MMM) != 1 || is.na(MMM)) {
+      stop("`MMM` must be a single non-missing numeric value when `calc = TRUE`.")
+    }
+  } else {
+    if (!(is.numeric(MMM) && length(MMM) == 1) && !is.na(MMM)) {
+      stop("`MMM` must be NA or a single numeric value when `calc = FALSE`.")
+    }
   }
 
   if (!is.numeric(anomaly) || length(anomaly) != 1 || is.na(anomaly)) {
     stop("`anomaly` must be a single non-missing numeric value.")
-  }
-
-  if (!is.logical(calc) || length(calc) != 1 || is.na(calc)) {
-    stop("`calc` must be TRUE or FALSE.")
   }
 
   if (!is.logical(summary) || length(summary) != 1 || is.na(summary)) {
@@ -419,9 +426,10 @@ hoboDHWs <- function(path,
     tmp_units <- tmp_units[!is.na(tmp_units)][1]
 
     tmp_out <- tibble::tibble(
-      DateTime = tmp_datetime,
-      Temperature_C = suppressWarnings(as.numeric(hoboFile[[tmp_temp_col]]))
+      DateTime = tmp_datetime
     )
+
+    tmp_out[[temp_col_name]] <- suppressWarnings(as.numeric(hoboFile[[tmp_temp_col]]))
 
     if (!is.na(tmp_light_col)) {
       tmp_out$Light <- suppressWarnings(as.numeric(hoboFile[[tmp_light_col]]))
@@ -431,23 +439,23 @@ hoboDHWs <- function(path,
       tmp_out[[groupingVariable]] <- as.character(hoboFile[[tmp_group_col]])
     }
 
-    if (all(is.na(tmp_out$Temperature_C))) {
+    if (all(is.na(tmp_out[[temp_col_name]]))) {
       stop("Temperature column could not be converted to numeric.")
     }
 
     if (is.na(tmp_units)) {
-      tmp_units <- ifelse(mean(tmp_out$Temperature_C, na.rm = TRUE) > 45, "F", "C")
+      tmp_units <- ifelse(mean(tmp_out[[temp_col_name]], na.rm = TRUE) > 45, "F", "C")
     }
 
     if (!is.na(tmp_units) && tmp_units == "F") {
       tmp_out <- tmp_out %>%
         dplyr::mutate(
-          Temperature_C = weathermetrics::fahrenheit.to.celsius(.data$Temperature_C)
+          !!temp_col_name := weathermetrics::fahrenheit.to.celsius(.data[[temp_col_name]])
         )
     }
 
     tmp_out %>%
-      dplyr::filter(!is.na(.data$DateTime), !is.na(.data$Temperature_C))
+      dplyr::filter(!is.na(.data$DateTime), !is.na(.data[[temp_col_name]]))
   }
 
   # ===== Decide which column should act as the grouping variable =====
@@ -500,10 +508,10 @@ hoboDHWs <- function(path,
       dplyr::group_by(.data$.group_internal, .data$Date) %>%
       dplyr::summarise(
         Source_File = safe_first_non_na(.data$Source_File),
-        Temperature_Average = mean(.data$Temperature_C, na.rm = TRUE),
-        Temperature_StDev = stats::sd(.data$Temperature_C, na.rm = TRUE),
-        Temperature_Min = min(.data$Temperature_C, na.rm = TRUE),
-        Temperature_Max = max(.data$Temperature_C, na.rm = TRUE),
+        Temperature_Average = mean(.data[[temp_col_name]], na.rm = TRUE),
+        Temperature_StDev = stats::sd(.data[[temp_col_name]], na.rm = TRUE),
+        Temperature_Min = min(.data[[temp_col_name]], na.rm = TRUE),
+        Temperature_Max = max(.data[[temp_col_name]], na.rm = TRUE),
         N_Records = dplyr::n(),
         dhDay = if (tmp_has_hotspot_weighted) {
           if (all(is.na(.data$hotspot_weighted))) {
@@ -569,8 +577,8 @@ hoboDHWs <- function(path,
           .data$interval_minutes
         ),
         hotspot = dplyr::if_else(
-          .data$Temperature_C >= (MMM + anomaly),
-          .data$Temperature_C - MMM,
+          .data[[temp_col_name]] >= (MMM + anomaly),
+          .data[[temp_col_name]] - MMM,
           0
         ),
         hotspot_weighted = .data$hotspot * (.data$interval_minutes / (24 * 60))
@@ -814,21 +822,25 @@ hoboDHWs <- function(path,
       hoboComplete,
       ggplot2::aes(
         x = .data$DateTime,
-        y = .data$Temperature_C
+        y = .data[[temp_col_name]]
       )
     ) +
       ggplot2::geom_line(color = "#2C77B8", alpha = 0.8) +
-      ggplot2::geom_hline(
-        yintercept = MMM + anomaly,
-        color = "darkred",
-        linetype = "dashed",
-        linewidth = 0.6
-      ) +
       ggplot2::labs(
-        y = "Temperature (C)",
+        y = temp_col_name,
         x = NULL
       ) +
       ggthemes::theme_few(base_size = 13)
+
+    if (calc) {
+      p1 <- p1 +
+        ggplot2::geom_hline(
+          yintercept = MMM + anomaly,
+          color = "darkred",
+          linetype = "dashed",
+          linewidth = 0.6
+        )
+    }
 
     if (!is.null(tmp_facet_formula)) {
       p1 <- p1 + ggplot2::facet_wrap(tmp_facet_formula, scales = "free_x")
