@@ -18,11 +18,11 @@
 #'
 #' When `calc = TRUE`, daily hotspot values are calculated relative to a
 #' bleaching threshold of `MMM + anomaly`, where hotspot magnitude is
-#' calculated as `Temperature - MMM` for observations at or above the threshold.
-#' Daily DHWs are then calculated across an explicit 84-day rolling window using
-#' actual calendar dates rather than row position. Missing days are completed as
-#' `NA` and propagate uncertainty through DHW calculations rather than being
-#' assumed to be zero.
+#' calculated as `Temperature_C - MMM` for observations at or above the
+#' threshold. Daily DHWs are then calculated across an explicit 84-day rolling
+#' window using actual calendar dates rather than row position. Missing days are
+#' completed as `NA` and propagate uncertainty through DHW calculations rather
+#' than being assumed to be zero.
 #'
 #' If `groupingVariable` is supplied, the named column is used for summaries,
 #' DHWs, and plotting without requiring that column to be literally named
@@ -139,7 +139,7 @@ hoboDHWs <- function(path,
     stop("`plotFile` must be NULL or a single non-empty character string.")
   }
 
-  # ===== Helper: return the first non-missing value in a vector =====
+  # ===== Return the first non-missing value in a vector =====
   safe_first_non_na <- function(x) {
     x <- x[!is.na(x)]
 
@@ -150,7 +150,7 @@ hoboDHWs <- function(path,
     x[[1]]
   }
 
-  # ===== Helper: extract logger serial number from header-like text =====
+  # ===== Extract logger serial number from header-like text =====
   extract_serial_number <- function(x) {
     if (length(x) == 0 || all(is.na(x))) {
       return(NA_character_)
@@ -164,7 +164,7 @@ hoboDHWs <- function(path,
     tmp_match[, 2]
   }
 
-  # ===== Helper: parse HOBO datetimes across common export styles =====
+  # ===== Parse HOBO datetimes across common export styles =====
   parse_hobo_datetime <- function(x) {
     tmp_raw_examples <- utils::head(unique(x[!is.na(x)]), 5)
 
@@ -177,11 +177,11 @@ hoboDHWs <- function(path,
     }
 
     if (inherits(x, c("POSIXct", "POSIXt"))) {
-      return(as.POSIXct(x))
+      return(as.POSIXct(x, tz = "UTC"))
     }
 
     if (inherits(x, "Date")) {
-      return(as.POSIXct(x))
+      return(as.POSIXct(x, tz = "UTC"))
     }
 
     if (is.factor(x)) {
@@ -189,7 +189,9 @@ hoboDHWs <- function(path,
     }
 
     if (is.numeric(x)) {
-      tmp_out <- try_return(as.POSIXct(x * 86400, origin = "1899-12-30", tz = "UTC"))
+      tmp_out <- try_return(
+        as.POSIXct(x * 86400, origin = "1899-12-30", tz = "UTC")
+      )
 
       if (!is.null(tmp_out)) {
         return(tmp_out)
@@ -211,7 +213,9 @@ hoboDHWs <- function(path,
     x[x == ""] <- NA_character_
 
     tmp_numeric <- suppressWarnings(as.numeric(x))
-    tmp_out <- try_return(as.POSIXct(tmp_numeric * 86400, origin = "1899-12-30", tz = "UTC"))
+    tmp_out <- try_return(
+      as.POSIXct(tmp_numeric * 86400, origin = "1899-12-30", tz = "UTC")
+    )
 
     if (!is.null(tmp_out)) {
       return(tmp_out)
@@ -219,10 +223,15 @@ hoboDHWs <- function(path,
 
     tmp_formats <- c(
       "%Y-%m-%d %H:%M:%S",
+      "%Y-%m-%d %H:%M",
       "%m/%d/%y %I:%M:%S %p",
       "%m/%d/%Y %I:%M:%S %p",
+      "%m/%d/%y %I:%M %p",
+      "%m/%d/%Y %I:%M %p",
       "%m/%d/%y %H:%M:%S",
-      "%m/%d/%Y %H:%M:%S"
+      "%m/%d/%Y %H:%M:%S",
+      "%m/%d/%y %H:%M",
+      "%m/%d/%Y %H:%M"
     )
 
     for (tmp_format in tmp_formats) {
@@ -244,7 +253,7 @@ hoboDHWs <- function(path,
     )
   }
 
-  # ===== Helper: read one HOBO file and recover header metadata =====
+  # ===== Read one HOBO file and recover header metadata =====
   read_hobo_file <- function(file_path) {
     tmp_ext <- tolower(tools::file_ext(file_path))
 
@@ -328,10 +337,8 @@ hoboDHWs <- function(path,
     )
   }
 
-  # ===== Helper: standardize input columns to a common HOBO schema =====
-  standardize_hobo <- function(hoboFile,
-                               groupingVariable = NA) {
-
+  # ===== Standardize input columns to a common HOBO schema =====
+  standardize_hobo <- function(hoboFile, groupingVariable = NA) {
     tmp_names <- names(hoboFile)
 
     if (is.null(tmp_names) || length(tmp_names) == 0) {
@@ -343,35 +350,35 @@ hoboDHWs <- function(path,
     ) %>%
       dplyr::mutate(
         function_name = dplyr::case_when(
-          grepl("date", original_name, ignore.case = TRUE) &
-            grepl("time", original_name, ignore.case = TRUE) ~ "DateTime",
-          grepl("date", original_name, ignore.case = TRUE) &
-            !grepl("time", original_name, ignore.case = TRUE) ~ "Date",
-          !grepl("date", original_name, ignore.case = TRUE) &
-            grepl("time", original_name, ignore.case = TRUE) ~ "Time",
-          grepl("temp", original_name, ignore.case = TRUE) ~ "Temperature",
-          grepl("lux", original_name, ignore.case = TRUE) |
-            grepl("light", original_name, ignore.case = TRUE) |
-            grepl("lum", original_name, ignore.case = TRUE) ~ "Light",
-          !is.na(groupingVariable) & original_name == groupingVariable ~ "GroupingVariable",
+          grepl("date", .data$original_name, ignore.case = TRUE) &
+            grepl("time", .data$original_name, ignore.case = TRUE) ~ "DateTime",
+          grepl("date", .data$original_name, ignore.case = TRUE) &
+            !grepl("time", .data$original_name, ignore.case = TRUE) ~ "Date",
+          !grepl("date", .data$original_name, ignore.case = TRUE) &
+            grepl("time", .data$original_name, ignore.case = TRUE) ~ "Time",
+          grepl("temp", .data$original_name, ignore.case = TRUE) ~ "Temperature",
+          grepl("lux", .data$original_name, ignore.case = TRUE) |
+            grepl("light", .data$original_name, ignore.case = TRUE) |
+            grepl("lum", .data$original_name, ignore.case = TRUE) ~ "Light",
+          !is.na(groupingVariable) & .data$original_name == groupingVariable ~ "GroupingVariable",
           TRUE ~ NA_character_
         ),
         units = dplyr::case_when(
-          function_name == "Temperature" &
-            grepl("f", original_name, ignore.case = TRUE) ~ "°F",
-          function_name == "Temperature" &
-            grepl("c", original_name, ignore.case = TRUE) ~ "°C",
-          function_name == "Light" &
-            grepl("lux", original_name, ignore.case = TRUE) ~ "lux",
-          function_name == "Light" &
-            grepl("lum", original_name, ignore.case = TRUE) ~ "lum",
+          .data$function_name == "Temperature" &
+            grepl("f", .data$original_name, ignore.case = TRUE) ~ "F",
+          .data$function_name == "Temperature" &
+            grepl("c", .data$original_name, ignore.case = TRUE) ~ "C",
+          .data$function_name == "Light" &
+            grepl("lux", .data$original_name, ignore.case = TRUE) ~ "lux",
+          .data$function_name == "Light" &
+            grepl("lum", .data$original_name, ignore.case = TRUE) ~ "lum",
           TRUE ~ NA_character_
         )
       )
 
     tmp_pick <- function(label) {
       tmp_match <- tmp_map %>%
-        dplyr::filter(function_name == label)
+        dplyr::filter(.data$function_name == label)
 
       if (nrow(tmp_match) == 0) {
         return(NA_character_)
@@ -398,20 +405,22 @@ hoboDHWs <- function(path,
     if (!is.na(tmp_datetime_col)) {
       tmp_datetime <- parse_hobo_datetime(hoboFile[[tmp_datetime_col]])
     } else if (!is.na(tmp_date_col) && !is.na(tmp_time_col)) {
-      tmp_datetime <- parse_hobo_datetime(paste(hoboFile[[tmp_date_col]], hoboFile[[tmp_time_col]]))
+      tmp_datetime <- parse_hobo_datetime(
+        paste(hoboFile[[tmp_date_col]], hoboFile[[tmp_time_col]])
+      )
     } else {
       tmp_datetime <- parse_hobo_datetime(hoboFile[[tmp_date_col]])
     }
 
-    tmp_convert <- tmp_map %>%
-      dplyr::filter(original_name == tmp_temp_col) %>%
-      dplyr::pull(units)
+    tmp_units <- tmp_map %>%
+      dplyr::filter(.data$original_name == tmp_temp_col) %>%
+      dplyr::pull(.data$units)
 
-    tmp_convert <- tmp_convert[!is.na(tmp_convert)][1]
+    tmp_units <- tmp_units[!is.na(tmp_units)][1]
 
     tmp_out <- tibble::tibble(
       DateTime = tmp_datetime,
-      Temperature = suppressWarnings(as.numeric(hoboFile[[tmp_temp_col]]))
+      Temperature_C = suppressWarnings(as.numeric(hoboFile[[tmp_temp_col]]))
     )
 
     if (!is.na(tmp_light_col)) {
@@ -422,29 +431,26 @@ hoboDHWs <- function(path,
       tmp_out[[groupingVariable]] <- as.character(hoboFile[[tmp_group_col]])
     }
 
-    if (all(is.na(tmp_out$Temperature))) {
+    if (all(is.na(tmp_out$Temperature_C))) {
       stop("Temperature column could not be converted to numeric.")
     }
 
-    if (is.na(tmp_convert)) {
-      tmp_convert <- ifelse(mean(tmp_out$Temperature, na.rm = TRUE) > 45, "°F", "°C")
+    if (is.na(tmp_units)) {
+      tmp_units <- ifelse(mean(tmp_out$Temperature_C, na.rm = TRUE) > 45, "F", "C")
     }
 
-    if (!is.na(tmp_convert) && tmp_convert == "°F") {
+    if (!is.na(tmp_units) && tmp_units == "F") {
       tmp_out <- tmp_out %>%
         dplyr::mutate(
-          Temperature = weathermetrics::fahrenheit.to.celsius(Temperature)
+          Temperature_C = weathermetrics::fahrenheit.to.celsius(.data$Temperature_C)
         )
     }
 
-    tmp_out <- tmp_out %>%
-      dplyr::filter(!is.na(DateTime), !is.na(Temperature)) %>%
-      dplyr::rename(`Temperature °C` = Temperature)
-
-    tmp_out
+    tmp_out %>%
+      dplyr::filter(!is.na(.data$DateTime), !is.na(.data$Temperature_C))
   }
 
-  # ===== Helper: decide which column should act as the grouping variable =====
+  # ===== Decide which column should act as the grouping variable =====
   determine_group_column <- function(df, groupingVariable = NA) {
     if (!is.na(groupingVariable)) {
       if (!groupingVariable %in% names(df)) {
@@ -458,14 +464,15 @@ hoboDHWs <- function(path,
       return(groupingVariable)
     }
 
-    if ("Source_File" %in% names(df) && dplyr::n_distinct(df$Source_File, na.rm = TRUE) > 1) {
+    if ("Source_File" %in% names(df) &&
+        dplyr::n_distinct(df$Source_File, na.rm = TRUE) > 1) {
       return("Source_File")
     }
 
     NA_character_
   }
 
-  # ===== Helper: calculate rolling DHWs using actual dates and an 84-day window =====
+  # ===== Calculate rolling DHWs using actual dates and an 84-day window =====
   calc_dhw_by_date <- function(dates, dhDay) {
     vapply(
       seq_along(dates),
@@ -484,30 +491,35 @@ hoboDHWs <- function(path,
     )
   }
 
-  # ===== Helper: summarise daily rows without assuming Logger_SN exists =====
+  # ===== Summarize daily rows without assuming Logger_SN exists =====
   summarise_daily_core <- function(df_daily) {
     tmp_has_logger <- "Logger_SN" %in% names(df_daily)
+    tmp_has_hotspot_weighted <- "hotspot_weighted" %in% names(df_daily)
 
     tmp_result <- df_daily %>%
-      dplyr::group_by(.group_internal, Date) %>%
+      dplyr::group_by(.data$.group_internal, .data$Date) %>%
       dplyr::summarise(
         Source_File = safe_first_non_na(.data$Source_File),
-        Temperature_Average = mean(.data$`Temperature °C`, na.rm = TRUE),
-        Temperature_StDev = stats::sd(.data$`Temperature °C`, na.rm = TRUE),
-        Temperature_Min = min(.data$`Temperature °C`, na.rm = TRUE),
-        Temperature_Max = max(.data$`Temperature °C`, na.rm = TRUE),
+        Temperature_Average = mean(.data$Temperature_C, na.rm = TRUE),
+        Temperature_StDev = stats::sd(.data$Temperature_C, na.rm = TRUE),
+        Temperature_Min = min(.data$Temperature_C, na.rm = TRUE),
+        Temperature_Max = max(.data$Temperature_C, na.rm = TRUE),
         N_Records = dplyr::n(),
-        dhDay = if ("hotspot_weighted" %in% names(df_daily)) {
-          if (all(is.na(.data$hotspot_weighted))) NA_real_ else sum(.data$hotspot_weighted, na.rm = TRUE)
+        dhDay = if (tmp_has_hotspot_weighted) {
+          if (all(is.na(.data$hotspot_weighted))) {
+            NA_real_
+          } else {
+            sum(.data$hotspot_weighted, na.rm = TRUE)
+          }
         } else {
-          NULL
+          NA_real_
         },
         .groups = "drop"
       )
 
     if (tmp_has_logger) {
       tmp_logger <- df_daily %>%
-        dplyr::group_by(.group_internal, Date) %>%
+        dplyr::group_by(.data$.group_internal, .data$Date) %>%
         dplyr::summarise(
           Logger_SN = safe_first_non_na(.data$Logger_SN),
           .groups = "drop"
@@ -515,13 +527,13 @@ hoboDHWs <- function(path,
 
       tmp_result <- tmp_result %>%
         dplyr::left_join(tmp_logger, by = c(".group_internal", "Date")) %>%
-        dplyr::relocate(dplyr::any_of("Logger_SN"), .after = Date)
+        dplyr::relocate(dplyr::any_of("Logger_SN"), .after = .data$Date)
     }
 
     tmp_result
   }
 
-  # ===== Helper: calculate daily temperature summaries, hotspots, and DHWs =====
+  # ===== Calculate daily temperature summaries, hotspots, and DHWs =====
   calculate_daily_metrics <- function(df, MMM, anomaly, group_col = NA_character_) {
     if (is.na(group_col)) {
       df <- df %>%
@@ -532,69 +544,95 @@ hoboDHWs <- function(path,
     }
 
     tmp_daily_raw <- df %>%
-      dplyr::arrange(.group_internal, DateTime) %>%
-      dplyr::group_by(.group_internal) %>%
+      dplyr::arrange(.data$.group_internal, .data$DateTime) %>%
+      dplyr::group_by(.data$.group_internal) %>%
       dplyr::mutate(
-        Date = as.Date(DateTime),
-        next_time = dplyr::lead(DateTime),
-        interval_minutes = as.numeric(difftime(next_time, DateTime, units = "mins"))
+        Date = as.Date(.data$DateTime),
+        next_time = dplyr::lead(.data$DateTime),
+        interval_minutes = as.numeric(
+          difftime(.data$next_time, .data$DateTime, units = "mins")
+        )
       ) %>%
-      dplyr::group_by(.group_internal, Date) %>%
+      dplyr::group_by(.data$.group_internal, .data$Date, .add = FALSE) %>%
       dplyr::mutate(
         interval_minutes = dplyr::if_else(
-          is.na(interval_minutes) | interval_minutes <= 0,
-          stats::median(interval_minutes[interval_minutes > 0], na.rm = TRUE),
-          interval_minutes
+          is.na(.data$interval_minutes) | .data$interval_minutes <= 0,
+          stats::median(
+            .data$interval_minutes[.data$interval_minutes > 0],
+            na.rm = TRUE
+          ),
+          .data$interval_minutes
         ),
         interval_minutes = dplyr::if_else(
-          is.na(interval_minutes) | !is.finite(interval_minutes),
+          is.na(.data$interval_minutes) | !is.finite(.data$interval_minutes),
           NA_real_,
-          interval_minutes
+          .data$interval_minutes
         ),
         hotspot = dplyr::if_else(
-          `Temperature °C` >= (MMM + anomaly),
-          `Temperature °C` - MMM,
+          .data$Temperature_C >= (MMM + anomaly),
+          .data$Temperature_C - MMM,
           0
         ),
-        hotspot_weighted = hotspot * (interval_minutes / (24 * 60))
+        hotspot_weighted = .data$hotspot * (.data$interval_minutes / (24 * 60))
       ) %>%
       dplyr::ungroup()
 
     tmp_daily_summary <- summarise_daily_core(tmp_daily_raw) %>%
-      dplyr::group_by(.group_internal) %>%
-      tidyr::complete(Date = seq(min(Date), max(Date), by = "day")) %>%
-      dplyr::arrange(Date, .by_group = TRUE) %>%
+      dplyr::group_by(.data$.group_internal) %>%
+      tidyr::complete(
+        Date = seq(min(.data$Date), max(.data$Date), by = "day")
+      ) %>%
+      dplyr::arrange(.data$Date, .by_group = TRUE) %>%
       tidyr::fill(dplyr::any_of(c("Logger_SN", "Source_File")), .direction = "downup") %>%
       dplyr::mutate(
-        DHWs = calc_dhw_by_date(Date, dhDay)
+        DHWs = calc_dhw_by_date(.data$Date, .data$dhDay)
       ) %>%
       dplyr::ungroup()
 
     if (is.na(group_col)) {
-      tmp_daily_summary <- tmp_daily_summary %>%
-        dplyr::select(-.group_internal)
+      tmp_daily_summary_out <- tmp_daily_summary %>%
+        dplyr::select(-.data$.group_internal)
     } else {
-      tmp_daily_summary <- tmp_daily_summary %>%
-        dplyr::mutate(!!group_col := .group_internal) %>%
-        dplyr::select(-.group_internal)
+      tmp_daily_summary_out <- tmp_daily_summary
+      tmp_daily_summary_out[[group_col]] <- tmp_daily_summary_out$.group_internal
+      tmp_daily_summary_out <- tmp_daily_summary_out %>%
+        dplyr::select(-.data$.group_internal)
     }
 
     if (is.na(group_col)) {
       tmp_complete <- tmp_daily_raw %>%
         dplyr::left_join(
-          tmp_daily_summary %>%
-            dplyr::select(Date, dhDay, DHWs),
+          tmp_daily_summary_out %>%
+            dplyr::select(.data$Date, .data$dhDay, .data$DHWs),
           by = "Date"
         ) %>%
-        dplyr::select(-next_time, -Date, -interval_minutes, -hotspot, -hotspot_weighted, -.group_internal)
+        dplyr::select(
+          -dplyr::any_of(c(
+            "next_time",
+            "Date",
+            "interval_minutes",
+            "hotspot",
+            "hotspot_weighted",
+            ".group_internal"
+          ))
+        )
     } else {
       tmp_complete <- tmp_daily_raw %>%
         dplyr::left_join(
-          tmp_daily_summary %>%
-            dplyr::select(dplyr::all_of(group_col), Date, dhDay, DHWs),
+          tmp_daily_summary_out %>%
+            dplyr::select(dplyr::all_of(group_col), .data$Date, .data$dhDay, .data$DHWs),
           by = c(group_col, "Date")
         ) %>%
-        dplyr::select(-next_time, -Date, -interval_minutes, -hotspot, -hotspot_weighted, -.group_internal)
+        dplyr::select(
+          -dplyr::any_of(c(
+            "next_time",
+            "Date",
+            "interval_minutes",
+            "hotspot",
+            "hotspot_weighted",
+            ".group_internal"
+          ))
+        )
     }
 
     tmp_complete <- tmp_complete %>%
@@ -602,11 +640,11 @@ hoboDHWs <- function(path,
 
     list(
       full = tmp_complete,
-      summary = tmp_daily_summary
+      summary = tmp_daily_summary_out
     )
   }
 
-  # ===== Helper: summarize daily temperatures without DHW calculations =====
+  # ===== Summarize daily temperatures without DHW calculations =====
   summarize_daily_only <- function(df, group_col = NA_character_) {
     if (is.na(group_col)) {
       df <- df %>%
@@ -617,24 +655,25 @@ hoboDHWs <- function(path,
     }
 
     tmp_summary <- df %>%
-      dplyr::mutate(Date = as.Date(DateTime)) %>%
+      dplyr::mutate(Date = as.Date(.data$DateTime)) %>%
       summarise_daily_core()
 
     if (is.na(group_col)) {
-      tmp_summary <- tmp_summary %>%
-        dplyr::select(-.group_internal)
+      tmp_summary_out <- tmp_summary %>%
+        dplyr::select(-.data$.group_internal)
     } else {
-      tmp_summary <- tmp_summary %>%
-        dplyr::mutate(!!group_col := .group_internal) %>%
-        dplyr::select(-.group_internal)
+      tmp_summary_out <- tmp_summary
+      tmp_summary_out[[group_col]] <- tmp_summary_out$.group_internal
+      tmp_summary_out <- tmp_summary_out %>%
+        dplyr::select(-.data$.group_internal)
     }
 
     tmp_complete <- df %>%
-      dplyr::select(-dplyr::any_of("Logger_SN"), -.group_internal)
+      dplyr::select(-dplyr::any_of(c("Logger_SN", ".group_internal")))
 
     list(
       full = tmp_complete,
-      summary = tmp_summary
+      summary = tmp_summary_out
     )
   }
 
@@ -753,6 +792,7 @@ hoboDHWs <- function(path,
     hoboSummary <- tmp_metrics$summary
   } else {
     warning("`calc = FALSE`, so DHW metrics were not calculated.")
+
     tmp_metrics <- summarize_daily_only(
       df = hoboFile,
       group_col = tmp_group_col
@@ -773,8 +813,8 @@ hoboDHWs <- function(path,
     p1 <- ggplot2::ggplot(
       hoboComplete,
       ggplot2::aes(
-        x = DateTime,
-        y = `Temperature °C`
+        x = .data$DateTime,
+        y = .data$Temperature_C
       )
     ) +
       ggplot2::geom_line(color = "#2C77B8", alpha = 0.8) +
@@ -785,7 +825,7 @@ hoboDHWs <- function(path,
         linewidth = 0.6
       ) +
       ggplot2::labs(
-        y = "Temperature (°C)",
+        y = "Temperature (C)",
         x = NULL
       ) +
       ggthemes::theme_few(base_size = 13)
@@ -798,8 +838,8 @@ hoboDHWs <- function(path,
       p2 <- ggplot2::ggplot(
         hoboSummary,
         ggplot2::aes(
-          x = Date,
-          y = DHWs
+          x = .data$Date,
+          y = .data$DHWs
         )
       ) +
         ggplot2::geom_line(color = "#F05D5E", linewidth = 0.8, na.rm = TRUE) +

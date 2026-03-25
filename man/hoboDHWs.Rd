@@ -66,11 +66,11 @@ including:
 
 When \code{calc = TRUE}, daily hotspot values are calculated relative to a
 bleaching threshold of \code{MMM + anomaly}, where hotspot magnitude is
-calculated as \code{Temperature - MMM} for observations at or above the threshold.
-Daily DHWs are then calculated across an explicit 84-day rolling window using
-actual calendar dates rather than row position. Missing days are completed as
-\code{NA} and propagate uncertainty through DHW calculations rather than being
-assumed to be zero.
+calculated as \code{Temperature_C - MMM} for observations at or above the
+threshold. Daily DHWs are then calculated across an explicit 84-day rolling
+window using actual calendar dates rather than row position. Missing days are
+completed as \code{NA} and propagate uncertainty through DHW calculations rather
+than being assumed to be zero.
 
 If \code{groupingVariable} is supplied, the named column is used for summaries,
 DHWs, and plotting without requiring that column to be literally named

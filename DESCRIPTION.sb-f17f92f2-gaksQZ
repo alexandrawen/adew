@@ -34,8 +34,6 @@ Imports:
     tibble,
     tidyr,
     tools,
-	plyr,
-	strex,
     weathermetrics
 Suggests:
     knitr,
